@@ -7,6 +7,7 @@ import {
   drawLenormandSpread,
   LENORMAND_CARDS,
   LENORMAND_FIXED_COMBINATIONS,
+  resolveInteractiveLenormandCards,
 } from '../packages/core/src/divination/algorithms/lenormand.ts';
 import type { LenormandData, LenormandSpreadType } from '../packages/core/src/types/divination.ts';
 import { assertPromptIsPortableTaskText } from './prompt-assertions';
@@ -36,8 +37,17 @@ test('雷诺曼大桌牌阵应抽取完整 36 张牌', () => {
     result.draw?.order.map((item) => [item.position, item.cardId, item.cardName, item.house]),
     result.cards.map((card) => [card.position, card.id, card.name, card.house]),
   );
-  assert.equal(result.combinations?.length, 35);
-  assert.ok(result.combinations?.every((item) => item.source));
+  assert.ok((result.combinations?.length ?? 0) > 0);
+  assert.ok(
+    result.combinations?.every(
+      (item) =>
+        item.source &&
+        item.relation &&
+        item.relation !== '牌序相邻' &&
+        item.position1 &&
+        item.position2,
+    ),
+  );
   assert.ok(result.layoutEvidence?.some((item) => item.includes('男士落第')));
   assert.ok(result.layoutEvidence?.some((item) => item.includes('女士落第')));
   assert.equal(
@@ -78,7 +88,9 @@ test('雷诺曼九宫应输出横纵与对角线结构证据', () => {
     ]),
     result.cards.map((card, index) => [index + 1, card.position, card.name, card.row, card.column]),
   );
-  assert.equal(result.combinations?.length, 8);
+  assert.equal(result.combinations?.length, 20);
+  assert.ok(result.combinations?.some((item) => item.relation === '纵向相邻'));
+  assert.ok(result.combinations?.some((item) => item.relation === '对角相邻'));
   assert.ok(result.layoutEvidence?.some((item) => item.includes('横向')));
   assert.ok(result.layoutEvidence?.some((item) => item.includes('对角线')));
   const layoutItems = result.evidenceAnalysis?.evidence.items.filter((item) =>
@@ -130,6 +142,107 @@ test('雷诺曼九宫应输出横纵与对角线结构证据', () => {
   assert.doesNotMatch(result.evidenceAnalysis?.randomFact.promptText || '', /20260711/);
   assert.doesNotMatch(result.evidenceAnalysis?.promptText || '', /随机种子：20260711/);
   assert.doesNotMatch(result.evidenceAnalysis?.promptText || '', /成功率|吉凶总分|score/i);
+});
+
+test('雷诺曼手工录入应按牌位成盘，并将随机轨迹标为不适用', () => {
+  const result = drawLenormandSpread('three', { manualCardIds: [1, 24, 36] });
+
+  assert.deepEqual(
+    result.cards.map((card) => [card.id, card.position]),
+    [
+      [1, '起因'],
+      [24, '现状'],
+      [36, '走向'],
+    ],
+  );
+  assert.equal(result.draw?.method, '用户按牌位手工录入');
+  assert.equal(result.meta?.algorithm, 'lenormand.spread.manual');
+  assert.equal(result.meta?.random, undefined);
+  assert.equal(result.evidenceAnalysis?.randomFact.status, '不适用');
+  assert.equal(result.evidenceAnalysis?.summaryFact.status, '证据链完整');
+  assert.ok(result.evidenceAnalysis?.evidence.items.some((item) => item.title === '手工录入来源'));
+
+  assert.throws(() => drawLenormandSpread('three', { manualCardIds: [1, 1, 2] }), /不能重复录入/);
+  assert.throws(
+    () => drawLenormandSpread('single', { seed: '冲突参数', manualCardIds: [1] }),
+    /不能同时提供随机选项/,
+  );
+});
+
+test('雷诺曼九宫固定组合应按纵向空间相邻命中并保留牌位', () => {
+  const result = drawLenormandSpread('nine', {
+    manualCardIds: [24, 1, 2, 25, 3, 4, 5, 6, 7],
+  });
+  const combination = result.combinations?.find(
+    (item) => item.card1 === '心' && item.card2 === '戒指',
+  );
+
+  assert.equal(combination?.source, '固定组合');
+  assert.equal(combination?.relation, '纵向相邻');
+  assert.equal(combination?.position1, '左上');
+  assert.equal(combination?.position2, '左侧');
+  const fact = result.evidenceAnalysis?.traditionalFacts.find(
+    (item) =>
+      item.kind === '固定组合' && item.cardNames.includes('心') && item.cardNames.includes('戒指'),
+  );
+  assert.match(fact?.promptText ?? '', /左上与左侧的纵向相邻/);
+  assert.ok(fact?.sources.some((source) => source.includes('纵向相邻')));
+});
+
+test('雷诺曼大桌不应把行尾与下一行行首误判为空间相邻', () => {
+  const cardIds = Array.from({ length: 36 }, (_, index) => index + 1);
+  [cardIds[8], cardIds[23]] = [cardIds[23], cardIds[8]];
+  [cardIds[9], cardIds[24]] = [cardIds[24], cardIds[9]];
+  const result = drawLenormandSpread('grandTableau', { manualCardIds: cardIds });
+
+  assert.equal(
+    result.combinations?.some(
+      (item) =>
+        (item.card1 === '心' && item.card2 === '戒指') ||
+        (item.card1 === '戒指' && item.card2 === '心'),
+    ),
+    false,
+  );
+});
+
+test('雷诺曼大桌固定组合应按纵向空间相邻命中', () => {
+  const cardIds = Array.from({ length: 36 }, (_, index) => index + 1);
+  [cardIds[0], cardIds[23]] = [cardIds[23], cardIds[0]];
+  [cardIds[9], cardIds[24]] = [cardIds[24], cardIds[9]];
+  const result = drawLenormandSpread('grandTableau', { manualCardIds: cardIds });
+  const combination = result.combinations?.find(
+    (item) => item.card1 === '心' && item.card2 === '戒指',
+  );
+
+  assert.equal(combination?.source, '固定组合');
+  assert.equal(combination?.relation, '纵向相邻');
+  assert.equal(combination?.rowDistance, 1);
+  assert.equal(combination?.columnDistance, 0);
+});
+
+test('雷诺曼手动抽取应按样本逐张无重复翻牌并保留可重放轨迹', () => {
+  const samples = [0, 0.5, 0.999];
+  const preview = resolveInteractiveLenormandCards('three', samples);
+  const result = drawLenormandSpread('three', { interactiveSamples: samples });
+
+  assert.deepEqual(
+    result.cards.map((card) => card.id),
+    preview.map((card) => card.id),
+  );
+  assert.equal(new Set(result.cards.map((card) => card.id)).size, 3);
+  assert.equal(result.draw?.method, '用户逐张触发前端随机抽取');
+  assert.equal(result.meta?.algorithm, 'lenormand.spread.interactive');
+  assert.deepEqual(result.meta?.random, { mode: 'system', seed: undefined, samples });
+  assert.equal(result.evidenceAnalysis?.randomFact.status, '可重放');
+
+  assert.throws(
+    () => drawLenormandSpread('three', { interactiveSamples: samples.slice(0, -1) }),
+    /需要逐张抽取3张牌/,
+  );
+  assert.throws(
+    () => drawLenormandSpread('three', { seed: '冲突', interactiveSamples: samples }),
+    /不能同时提供随机选项/,
+  );
 });
 
 test('雷诺曼全部单牌应保留原文并生成关键词核验范围', () => {

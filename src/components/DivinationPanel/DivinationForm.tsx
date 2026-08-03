@@ -6,10 +6,13 @@ import {
   LIUREN_TEMPLATE_OPTIONS,
   MEIHUA_METHOD_OPTIONS,
   TAROT_SPREAD_OPTIONS,
-  XIAOLIUREN_METHOD_OPTIONS,
-  XIAOLIUREN_SCHOOL_OPTIONS,
   JINKOUJUE_METHOD_OPTIONS,
 } from '@core/divination/config';
+import { resolveInteractiveTarotCards, tarotSpreads } from '@core/divination/tarot';
+import {
+  LENORMAND_SPREADS,
+  resolveInteractiveLenormandCards,
+} from '@core/divination/algorithms/lenormand';
 import type { DivinationDraft } from '@/lib/divination/engine';
 import {
   almanacTopicLabelMap,
@@ -19,8 +22,6 @@ import {
   meihuaMethodLabelMap,
   methodLabelMap,
   tarotSpreadLabelMap,
-  xiaoliurenMethodLabelMap,
-  xiaoliurenSchoolLabelMap,
   jinkoujueMethodLabelMap,
 } from './constants';
 
@@ -28,6 +29,32 @@ const DIVINATION_TIME_MODE_OPTIONS = [
   { value: 'current', label: '当前时间' },
   { value: 'custom', label: '自定时间' },
 ] as const;
+
+const LIUYAO_METHOD_OPTIONS = [
+  { value: 'time', label: '时间起卦' },
+  { value: 'coins', label: '手摇' },
+  { value: 'manual', label: '手动录入' },
+] as const;
+
+const LIUYAO_YAO_OPTIONS = [
+  { value: 6, label: '6 · 老阴（动）' },
+  { value: 7, label: '7 · 少阳' },
+  { value: 8, label: '8 · 少阴' },
+  { value: 9, label: '9 · 老阳（动）' },
+] as const;
+
+const LIUYAO_POSITION_LABELS = ['初爻', '二爻', '三爻', '四爻', '五爻', '上爻'] as const;
+
+const MANUAL_METHOD_OPTIONS = [
+  { value: 'random', label: '自动抽取' },
+  { value: 'interactive', label: '手动抽取' },
+] as const;
+
+const liuyaoMethodLabelMap: Record<NonNullable<DivinationDraft['liuyaoMethod']>, string> = {
+  time: '时间起卦',
+  coins: '手摇',
+  manual: '手动录入',
+};
 
 const divinationTimeModeLabelMap: Record<
   NonNullable<DivinationDraft['divinationTimeMode']>,
@@ -46,9 +73,17 @@ function isTimeBasedDivinationDraft(draft: DivinationDraft) {
     return true;
   }
 
-  if (draft.method === 'taiyi' && (draft.taiyiScope ?? 'year') !== 'year') return true;
-
   return false;
+}
+
+function createRandomSample() {
+  const cryptoObject = globalThis.crypto;
+  if (cryptoObject?.getRandomValues) {
+    const value = new Uint32Array(1);
+    cryptoObject.getRandomValues(value);
+    return value[0] / 4294967296;
+  }
+  return Math.random();
 }
 
 interface DivinationFormProps {
@@ -96,6 +131,92 @@ export function DivinationForm({
         : '开始占卜';
   const isTimeBasedDivination = isTimeBasedDivinationDraft(draft);
   const divinationTimeMode = draft.divinationTimeMode ?? 'current';
+  const liuyaoMethod = draft.liuyaoMethod ?? 'time';
+  const liuyaoYaos = draft.liuyaoYaos ?? [];
+  const liuyaoCoinThrows = draft.liuyaoCoinThrows ?? [];
+  const visibleLiuyaoYaos =
+    liuyaoMethod === 'coins' ? liuyaoCoinThrows.map((item) => item.total) : liuyaoYaos;
+  const tarotMethod = draft.tarotMethod ?? 'random';
+  const tarotInteractiveSamples = draft.tarotInteractiveSamples ?? [];
+  const tarotSpread = tarotSpreads[draft.tarotSpread];
+  const tarotInteractiveCards = resolveInteractiveTarotCards(
+    draft.tarotSpread,
+    tarotInteractiveSamples,
+  );
+  const lenormandMethod = draft.lenormandMethod ?? 'random';
+  const lenormandInteractiveSamples = draft.lenormandInteractiveSamples ?? [];
+  const lenormandSpread = LENORMAND_SPREADS[draft.lenormandSpread];
+  const lenormandInteractiveCards = resolveInteractiveLenormandCards(
+    draft.lenormandSpread,
+    lenormandInteractiveSamples,
+  );
+  const ssgwMethod = draft.ssgwMethod ?? 'random';
+  const ssgwNumber = draft.ssgwNumber ?? '';
+  const isManualInputIncomplete =
+    (draft.method === 'liuyao' &&
+      ((liuyaoMethod === 'manual' && liuyaoYaos.length !== 6) ||
+        (liuyaoMethod === 'coins' && liuyaoCoinThrows.length !== 6))) ||
+    (draft.method === 'tarot' &&
+      tarotMethod === 'interactive' &&
+      tarotInteractiveCards.length !== tarotSpread.cardCount) ||
+    (draft.method === 'lenormand' &&
+      lenormandMethod === 'interactive' &&
+      lenormandInteractiveCards.length !== lenormandSpread.positions.length) ||
+    (draft.method === 'ssgw' &&
+      ssgwMethod === 'manual' &&
+      (!/^\d+$/.test(ssgwNumber) || Number(ssgwNumber) < 1 || Number(ssgwNumber) > 92));
+
+  function appendLiuyaoYao(value: 6 | 7 | 8 | 9) {
+    if (liuyaoYaos.length < 6) {
+      updateDraft('liuyaoYaos', [...liuyaoYaos, value]);
+    }
+  }
+
+  function shakeLiuyaoYao() {
+    if (liuyaoCoinThrows.length >= 6) return;
+    const coins = [0, 1, 2].map(() => (createRandomSample() < 0.5 ? 2 : 3)) as [
+      2 | 3,
+      2 | 3,
+      2 | 3,
+    ];
+    const total = coins.reduce<number>((sum, coin) => sum + coin, 0) as 6 | 7 | 8 | 9;
+    updateDraft('liuyaoCoinThrows', [...liuyaoCoinThrows, { coins, total }]);
+  }
+
+  function updateTarotSpread(value: DivinationDraft['tarotSpread']) {
+    updateDraft('tarotSpread', value);
+    updateDraft('tarotInteractiveSamples', []);
+  }
+
+  function drawTarotCard() {
+    if (tarotInteractiveCards.length >= tarotSpread.cardCount) return;
+    updateDraft('tarotInteractiveSamples', [
+      ...tarotInteractiveSamples,
+      createRandomSample(),
+      createRandomSample(),
+    ]);
+  }
+
+  function resetTarotCards() {
+    updateDraft('tarotInteractiveSamples', []);
+  }
+
+  function updateLenormandSpread(value: DivinationDraft['lenormandSpread']) {
+    updateDraft('lenormandSpread', value);
+    updateDraft('lenormandInteractiveSamples', []);
+  }
+
+  function drawLenormandCard() {
+    if (lenormandInteractiveCards.length >= lenormandSpread.positions.length) return;
+    updateDraft('lenormandInteractiveSamples', [
+      ...lenormandInteractiveSamples,
+      createRandomSample(),
+    ]);
+  }
+
+  function resetLenormandCards() {
+    updateDraft('lenormandInteractiveSamples', []);
+  }
 
   function updateAlmanacParticipant(
     id: string,
@@ -211,64 +332,6 @@ export function DivinationForm({
                       </div>
                     ) : null}
 
-                    {draft.method === 'xiaoliuren' ? (
-                      <div className="form-item divination-inline-field">
-                        <label htmlFor="xiaoliuren-school-select">流派</label>
-                        <div className="divination-select-shell divination-desktop-select-shell">
-                          <span className="divination-trigger-text">
-                            {xiaoliurenSchoolLabelMap[draft.xiaoliurenSchool]}
-                          </span>
-                          <select
-                            id="xiaoliuren-school-select"
-                            value={draft.xiaoliurenSchool}
-                            className="form-input divination-overlay-select"
-                            onChange={(event) => {
-                              const school = event.target
-                                .value as DivinationDraft['xiaoliurenSchool'];
-                              updateDraft('xiaoliurenSchool', school);
-                              if (school === 'huashan') {
-                                updateDraft('xiaoliurenMethod', 'time');
-                              }
-                            }}
-                          >
-                            {XIAOLIUREN_SCHOOL_OPTIONS.map((item) => (
-                              <option key={item.value} value={item.value}>
-                                {item.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {draft.method === 'xiaoliuren' && draft.xiaoliurenSchool !== 'huashan' ? (
-                      <div className="form-item divination-inline-field">
-                        <label htmlFor="xiaoliuren-method-select">起课方式</label>
-                        <div className="divination-select-shell divination-desktop-select-shell">
-                          <span className="divination-trigger-text">
-                            {xiaoliurenMethodLabelMap[draft.xiaoliurenMethod]}
-                          </span>
-                          <select
-                            id="xiaoliuren-method-select"
-                            value={draft.xiaoliurenMethod}
-                            className="form-input divination-overlay-select"
-                            onChange={(event) =>
-                              updateDraft(
-                                'xiaoliurenMethod',
-                                event.target.value as DivinationDraft['xiaoliurenMethod'],
-                              )
-                            }
-                          >
-                            {XIAOLIUREN_METHOD_OPTIONS.map((item) => (
-                              <option key={item.value} value={item.value}>
-                                {item.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    ) : null}
-
                     {draft.method === 'jinkoujue' ? (
                       <div className="form-item divination-inline-field">
                         <label htmlFor="jinkoujue-method-select">起课方式</label>
@@ -309,26 +372,6 @@ export function DivinationForm({
                           value={draft.meihuaNumber}
                           onChange={(event) =>
                             updateDraft('meihuaNumber', event.target.value.replace(/[^\d]/g, ''))
-                          }
-                        />
-                      </div>
-                    ) : null}
-
-                    {draft.method === 'xiaoliuren' && draft.xiaoliurenMethod === 'number' ? (
-                      <div className="form-item divination-inline-field divination-inline-number-field">
-                        <label htmlFor="xiaoliuren-number-input">起课数字</label>
-                        <input
-                          id="xiaoliuren-number-input"
-                          type="text"
-                          inputMode="numeric"
-                          className="form-input"
-                          placeholder="例如 18"
-                          value={draft.xiaoliurenNumber}
-                          onChange={(event) =>
-                            updateDraft(
-                              'xiaoliurenNumber',
-                              event.target.value.replace(/[^\d]/g, ''),
-                            )
                           }
                         />
                       </div>
@@ -379,6 +422,34 @@ export function DivinationForm({
                       </div>
                     ) : null}
 
+                    {draft.method === 'liuyao' ? (
+                      <div className="form-item divination-inline-field">
+                        <label htmlFor="liuyao-method-select">起卦方式</label>
+                        <div className="divination-select-shell divination-desktop-select-shell">
+                          <span className="divination-trigger-text">
+                            {liuyaoMethodLabelMap[liuyaoMethod]}
+                          </span>
+                          <select
+                            id="liuyao-method-select"
+                            value={liuyaoMethod}
+                            className="form-input divination-overlay-select"
+                            onChange={(event) =>
+                              updateDraft(
+                                'liuyaoMethod',
+                                event.target.value as NonNullable<DivinationDraft['liuyaoMethod']>,
+                              )
+                            }
+                          >
+                            {LIUYAO_METHOD_OPTIONS.map((item) => (
+                              <option key={item.value} value={item.value}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    ) : null}
+
                     {draft.method === 'liuren' ? (
                       <div className="form-item divination-inline-field">
                         <label htmlFor="liuren-template-select">问题范围</label>
@@ -419,8 +490,7 @@ export function DivinationForm({
                             value={draft.tarotSpread}
                             className="form-input divination-overlay-select"
                             onChange={(event) =>
-                              updateDraft(
-                                'tarotSpread',
+                              updateTarotSpread(
                                 event.target.value as DivinationDraft['tarotSpread'],
                               )
                             }
@@ -475,8 +545,7 @@ export function DivinationForm({
                             value={draft.lenormandSpread}
                             className="form-input divination-overlay-select"
                             onChange={(event) =>
-                              updateDraft(
-                                'lenormandSpread',
+                              updateLenormandSpread(
                                 event.target.value as DivinationDraft['lenormandSpread'],
                               )
                             }
@@ -538,7 +607,6 @@ export function DivinationForm({
                 className={`divination-mobile-control-row ${
                   draft.method === 'meihua' ||
                   draft.method === 'liuyao' ||
-                  draft.method === 'xiaoliuren' ||
                   draft.method === 'jinkoujue' ||
                   draft.method === 'liuren' ||
                   draft.method === 'tarot' ||
@@ -587,31 +655,6 @@ export function DivinationForm({
                       }
                     >
                       {MEIHUA_METHOD_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ) : null}
-
-                {draft.method === 'xiaoliuren' ? (
-                  <div className="divination-mobile-secondary-picker">
-                    <span className="divination-mobile-trigger-text divination-trigger-text">
-                      {xiaoliurenMethodLabelMap[draft.xiaoliurenMethod]}
-                    </span>
-                    <select
-                      aria-label="起课方式"
-                      value={draft.xiaoliurenMethod}
-                      className="form-input divination-mobile-method-select divination-overlay-select"
-                      onChange={(event) =>
-                        updateDraft(
-                          'xiaoliurenMethod',
-                          event.target.value as DivinationDraft['xiaoliurenMethod'],
-                        )
-                      }
-                    >
-                      {XIAOLIUREN_METHOD_OPTIONS.map((item) => (
                         <option key={item.value} value={item.value}>
                           {item.label}
                         </option>
@@ -670,6 +713,31 @@ export function DivinationForm({
                   </div>
                 ) : null}
 
+                {draft.method === 'liuyao' ? (
+                  <div className="divination-mobile-secondary-picker">
+                    <span className="divination-mobile-trigger-text divination-trigger-text">
+                      {liuyaoMethodLabelMap[liuyaoMethod]}
+                    </span>
+                    <select
+                      aria-label="六爻起卦方式"
+                      value={liuyaoMethod}
+                      className="form-input divination-mobile-method-select divination-overlay-select"
+                      onChange={(event) =>
+                        updateDraft(
+                          'liuyaoMethod',
+                          event.target.value as NonNullable<DivinationDraft['liuyaoMethod']>,
+                        )
+                      }
+                    >
+                      {LIUYAO_METHOD_OPTIONS.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+
                 {draft.method === 'tarot' ? (
                   <div className="divination-mobile-secondary-picker">
                     <span className="divination-mobile-trigger-text divination-trigger-text">
@@ -680,10 +748,7 @@ export function DivinationForm({
                       value={draft.tarotSpread}
                       className="form-input divination-mobile-method-select divination-overlay-select"
                       onChange={(event) =>
-                        updateDraft(
-                          'tarotSpread',
-                          event.target.value as DivinationDraft['tarotSpread'],
-                        )
+                        updateTarotSpread(event.target.value as DivinationDraft['tarotSpread'])
                       }
                     >
                       {TAROT_SPREAD_OPTIONS.map((item) => (
@@ -755,8 +820,7 @@ export function DivinationForm({
                       value={draft.lenormandSpread}
                       className="form-input divination-mobile-method-select divination-overlay-select"
                       onChange={(event) =>
-                        updateDraft(
-                          'lenormandSpread',
+                        updateLenormandSpread(
                           event.target.value as DivinationDraft['lenormandSpread'],
                         )
                       }
@@ -827,25 +891,6 @@ export function DivinationForm({
             </div>
           ) : null}
 
-          {draft.method === 'xiaoliuren' && draft.xiaoliurenMethod === 'number' ? (
-            <div className="form-row divination-mobile-only">
-              <div className="form-item">
-                <label htmlFor="xiaoliuren-number-input-mobile">起课数字</label>
-                <input
-                  id="xiaoliuren-number-input-mobile"
-                  type="text"
-                  inputMode="numeric"
-                  className="form-input"
-                  placeholder="例如 18"
-                  value={draft.xiaoliurenNumber}
-                  onChange={(event) =>
-                    updateDraft('xiaoliurenNumber', event.target.value.replace(/[^\d]/g, ''))
-                  }
-                />
-              </div>
-            </div>
-          ) : null}
-
           {draft.method === 'jinkoujue' && draft.jinkoujueMethod === 'number' ? (
             <div className="form-row divination-mobile-only">
               <div className="form-item">
@@ -862,6 +907,256 @@ export function DivinationForm({
                   }
                 />
               </div>
+            </div>
+          ) : null}
+
+          {draft.method === 'liuyao' && (liuyaoMethod === 'manual' || liuyaoMethod === 'coins') ? (
+            <div className="divination-extra-panel liuyao-manual-panel">
+              <div className="manual-entry-head">
+                <strong>
+                  {visibleLiuyaoYaos.length < 6
+                    ? `下一爻：${LIUYAO_POSITION_LABELS[visibleLiuyaoYaos.length]}`
+                    : '六爻已成'}
+                </strong>
+                <span>{visibleLiuyaoYaos.length} / 6</span>
+              </div>
+              <div className="liuyao-reveal-stack" aria-label="逐爻显示六爻卦象">
+                {[...LIUYAO_POSITION_LABELS].reverse().map((label, reverseIndex) => {
+                  const index = 5 - reverseIndex;
+                  const value = visibleLiuyaoYaos[index];
+                  const coinThrow = liuyaoCoinThrows[index];
+                  const isYin = value === 6 || value === 8;
+                  const isMoving = value === 6 || value === 9;
+                  return (
+                    <div
+                      className={`liuyao-reveal-row ${value ? 'is-filled' : ''} ${index === visibleLiuyaoYaos.length - 1 ? 'is-latest' : ''}`}
+                      key={label}
+                    >
+                      <span className="liuyao-reveal-label">{label}</span>
+                      <span
+                        className={`liuyao-reveal-line ${value ? 'is-filled' : ''} ${isYin ? 'is-yin' : 'is-yang'} ${isMoving ? 'is-moving' : ''}`}
+                      >
+                        {value ? (
+                          isYin ? (
+                            <>
+                              <i />
+                              <i />
+                            </>
+                          ) : (
+                            <i />
+                          )
+                        ) : null}
+                      </span>
+                      <span className="liuyao-reveal-value">
+                        {value
+                          ? liuyaoMethod === 'coins' && coinThrow
+                            ? `${coinThrow.coins.join(' + ')} = ${LIUYAO_YAO_OPTIONS.find((item) => item.value === value)?.label}`
+                            : LIUYAO_YAO_OPTIONS.find((item) => item.value === value)?.label
+                          : '待起'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {visibleLiuyaoYaos.length < 6 && liuyaoMethod === 'manual' ? (
+                <div className="liuyao-cast-actions">
+                  {LIUYAO_YAO_OPTIONS.map((item) => (
+                    <button
+                      type="button"
+                      className="manual-choice-button"
+                      key={item.value}
+                      onClick={() => appendLiuyaoYao(item.value)}
+                    >
+                      <span>{item.label.split(' · ')[1]}</span>
+                      <strong>{item.value}</strong>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="manual-session-actions">
+                {visibleLiuyaoYaos.length < 6 && liuyaoMethod === 'coins' ? (
+                  <button
+                    type="button"
+                    className="primary-button liuyao-shake-button"
+                    onClick={shakeLiuyaoYao}
+                  >
+                    手摇一爻
+                  </button>
+                ) : null}
+                {visibleLiuyaoYaos.length > 0 ? (
+                  <button
+                    type="button"
+                    className="secondary-page-button compact-action-button manual-reset-button"
+                    onClick={() =>
+                      liuyaoMethod === 'coins'
+                        ? updateDraft('liuyaoCoinThrows', [])
+                        : updateDraft('liuyaoYaos', [])
+                    }
+                  >
+                    重新起卦
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
+          {draft.method === 'tarot' ? (
+            <div className="divination-extra-panel manual-entry-panel">
+              <div className="manual-mode-switch" role="group" aria-label="塔罗抽牌方式">
+                {MANUAL_METHOD_OPTIONS.map((item) => (
+                  <button
+                    type="button"
+                    className={tarotMethod === item.value ? 'is-active' : ''}
+                    key={item.value}
+                    onClick={() => updateDraft('tarotMethod', item.value)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              {tarotMethod === 'interactive' ? (
+                <div className="interactive-draw-session">
+                  <div className="manual-entry-head">
+                    <strong>
+                      {tarotInteractiveCards.length < tarotSpread.cardCount
+                        ? `当前牌位：${tarotSpread.positions[tarotInteractiveCards.length]}`
+                        : '牌阵已抽完'}
+                    </strong>
+                    <span>
+                      {tarotInteractiveCards.length} / {tarotSpread.cardCount}
+                    </span>
+                  </div>
+                  <div className="manual-record-list" aria-live="polite">
+                    {tarotInteractiveCards.map((card, index) => (
+                      <div className="manual-record-item is-revealed" key={`${card.id}-${index}`}>
+                        <span>{tarotSpread.positions[index]}</span>
+                        <strong>
+                          {card.name} · {card.reversed ? '逆位' : '正位'}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="manual-session-actions">
+                    {tarotInteractiveCards.length < tarotSpread.cardCount ? (
+                      <button
+                        type="button"
+                        className="primary-button interactive-draw-button"
+                        onClick={drawTarotCard}
+                      >
+                        抽一张
+                      </button>
+                    ) : null}
+                    {tarotInteractiveCards.length > 0 ? (
+                      <button
+                        type="button"
+                        className="secondary-page-button compact-action-button manual-reset-button"
+                        onClick={resetTarotCards}
+                      >
+                        重新抽取
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {draft.method === 'lenormand' ? (
+            <div className="divination-extra-panel manual-entry-panel">
+              <div className="manual-mode-switch" role="group" aria-label="雷诺曼抽牌方式">
+                {MANUAL_METHOD_OPTIONS.map((item) => (
+                  <button
+                    type="button"
+                    className={lenormandMethod === item.value ? 'is-active' : ''}
+                    key={item.value}
+                    onClick={() => updateDraft('lenormandMethod', item.value)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              {lenormandMethod === 'interactive' ? (
+                <div className="interactive-draw-session">
+                  <div className="manual-entry-head">
+                    <strong>
+                      {lenormandInteractiveCards.length < lenormandSpread.positions.length
+                        ? `当前牌位：${lenormandSpread.positions[lenormandInteractiveCards.length]}`
+                        : '牌阵已抽完'}
+                    </strong>
+                    <span>
+                      {lenormandInteractiveCards.length} / {lenormandSpread.positions.length}
+                    </span>
+                  </div>
+                  <div className="manual-record-list" aria-live="polite">
+                    {lenormandInteractiveCards.map((card, index) => (
+                      <div className="manual-record-item is-revealed" key={`${card.id}-${index}`}>
+                        <span>{lenormandSpread.positions[index]}</span>
+                        <strong>{card.name}</strong>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="manual-session-actions">
+                    {lenormandInteractiveCards.length < lenormandSpread.positions.length ? (
+                      <button
+                        type="button"
+                        className="primary-button interactive-draw-button"
+                        onClick={drawLenormandCard}
+                      >
+                        抽一张
+                      </button>
+                    ) : null}
+                    {lenormandInteractiveCards.length > 0 ? (
+                      <button
+                        type="button"
+                        className="secondary-page-button compact-action-button manual-reset-button"
+                        onClick={resetLenormandCards}
+                      >
+                        重新抽取
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {draft.method === 'ssgw' ? (
+            <div className="divination-extra-panel manual-entry-panel ssgw-manual-panel">
+              <div className="manual-mode-switch" role="group" aria-label="灵签求签方式">
+                <button
+                  type="button"
+                  className={ssgwMethod === 'random' ? 'is-active' : ''}
+                  onClick={() => updateDraft('ssgwMethod', 'random')}
+                >
+                  自动求签
+                </button>
+                <button
+                  type="button"
+                  className={ssgwMethod === 'manual' ? 'is-active' : ''}
+                  onClick={() => updateDraft('ssgwMethod', 'manual')}
+                >
+                  录入签号
+                </button>
+              </div>
+              {ssgwMethod === 'manual' ? (
+                <div className="form-item ssgw-number-field">
+                  <label htmlFor="ssgw-number-input">签号（1-92）</label>
+                  <input
+                    id="ssgw-number-input"
+                    type="text"
+                    inputMode="numeric"
+                    className="form-input"
+                    placeholder="例如 36"
+                    value={ssgwNumber}
+                    onChange={(event) =>
+                      updateDraft(
+                        'ssgwNumber',
+                        event.target.value.replace(/[^\d]/g, '').slice(0, 2),
+                      )
+                    }
+                  />
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -896,41 +1191,19 @@ export function DivinationForm({
             <div className="divination-extra-panel">
               <div className="form-row">
                 <div className="form-item">
-                  <label htmlFor="taiyi-scope-select">太乙计式</label>
-                  <select
-                    id="taiyi-scope-select"
+                  <label htmlFor="taiyi-year-input">年计年份</label>
+                  <input
+                    id="taiyi-year-input"
+                    type="text"
+                    inputMode="numeric"
                     className="form-input"
-                    value={draft.taiyiScope ?? 'year'}
+                    placeholder="例如 2026"
+                    value={draft.taiyiYear}
                     onChange={(event) =>
-                      updateDraft('taiyiScope', event.target.value as DivinationDraft['taiyiScope'])
+                      updateDraft('taiyiYear', event.target.value.replace(/[^\d]/g, ''))
                     }
-                  >
-                    <option value="year">年计</option>
-                    <option value="month">月计</option>
-                    <option value="day">日计</option>
-                    <option value="hour">时计</option>
-                    <option value="minute">分计</option>
-                  </select>
+                  />
                 </div>
-                {(draft.taiyiScope ?? 'year') === 'year' ? (
-                  <div className="form-item">
-                    <label htmlFor="taiyi-year-input">要观察的年份</label>
-                    <input
-                      id="taiyi-year-input"
-                      type="text"
-                      inputMode="numeric"
-                      className="form-input"
-                      placeholder="例如 2026"
-                      value={draft.taiyiYear}
-                      onChange={(event) =>
-                        updateDraft('taiyiYear', event.target.value.replace(/[^\d]/g, ''))
-                      }
-                    />
-                  </div>
-                ) : null}
-              </div>
-              <div className="birth-time-hint">
-                年计看年度，月计看月度，日计看当天，时计看时辰，分计细化到当前分钟；各计式按自己的积数与阴阳遁起局。
               </div>
             </div>
           ) : null}
@@ -1281,7 +1554,7 @@ export function DivinationForm({
         <button
           className="primary-button start-submit-button"
           type="button"
-          disabled={isSubmitting}
+          disabled={isSubmitting || isManualInputIncomplete}
           onClick={onSubmit}
         >
           {submitButtonText}

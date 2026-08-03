@@ -13,7 +13,6 @@ import type {
   TaiyiResult,
   TaiyiScope,
   XiaoliurenDivinationMethod,
-  XiaoliurenSchool,
   JinkoujueDivinationMethod,
 } from '../../../types/divination';
 import type { DivinationMethodId } from '@core/divination/config';
@@ -35,6 +34,8 @@ import { buildLiurenTemplateText } from '@core/divination/engine/liuren-template
 import { buildLiuyaoTemplateText } from '@core/divination/engine/liuyao-template';
 import { appendTraditionalResearchNotice } from 'mingyu-core/prompt-evidence';
 import { buildPromptGuidanceSections } from '../../prompt-guidance';
+import { tarotSpreads } from '@core/divination/tarot';
+import { LENORMAND_SPREADS } from '@core/divination/algorithms/lenormand';
 
 const CONCRETE_DIVINATION_METHODS: Array<Exclude<DivinationMethodId, 'random'>> = [
   'liuyao',
@@ -72,21 +73,30 @@ export type DivinationDraft = {
   divinationTimeMode?: 'current' | 'custom';
   customDivinationDate?: string;
   customDivinationTime?: string;
+  liuyaoMethod?: 'time' | 'coins' | 'manual';
+  liuyaoYaos?: Array<6 | 7 | 8 | 9>;
+  liuyaoCoinThrows?: Array<{ coins: [2 | 3, 2 | 3, 2 | 3]; total: 6 | 7 | 8 | 9 }>;
   meihuaMethod: 'time' | 'number' | 'random' | 'timeTrigram';
   meihuaNumber: string;
   xiaoliurenMethod: XiaoliurenDivinationMethod;
-  xiaoliurenSchool: XiaoliurenSchool;
-  xiaoliurenNumber: string;
   jinkoujueMethod: JinkoujueDivinationMethod;
   jinkoujueNumber: string;
   liuyaoTemplate: LiuyaoTemplateType;
   liurenTemplate: LiurenTemplateType;
   tarotSpread: TarotSpreadType;
+  tarotMethod?: 'random' | 'manual' | 'interactive';
+  tarotManualCards?: Array<{ id: number; reversed: boolean }>;
+  tarotInteractiveSamples?: number[];
+  ssgwMethod?: 'random' | 'manual';
+  ssgwNumber?: string;
   almanacTopic: AlmanacTopic;
   almanacStartDate: string;
   almanacEndDate: string;
   almanacParticipants: AlmanacParticipantInput[];
   lenormandSpread: LenormandSpreadType;
+  lenormandMethod?: 'random' | 'manual' | 'interactive';
+  lenormandManualCardIds?: number[];
+  lenormandInteractiveSamples?: number[];
   astrolabeName: string;
   astrolabeGender: '' | '男' | '女';
   astrolabeYear: string;
@@ -253,23 +263,66 @@ function validateDraft(draft: DivinationDraft) {
     readPositiveIntegerText(draft.meihuaNumber, '数字起卦');
   }
 
-  if (draft.method === 'xiaoliuren') {
-    if (draft.xiaoliurenSchool === 'huashan' && draft.xiaoliurenMethod !== 'time') {
-      throw new Error('华山派小六壬只以时间起课');
+  if (draft.method === 'liuyao' && (draft.liuyaoMethod ?? 'time') === 'manual') {
+    if (draft.liuyaoYaos?.length !== 6) {
+      throw new Error('手动起卦需要从初爻到上爻填写六个爻值');
     }
-    if (draft.xiaoliurenMethod === 'number') {
-      readPositiveIntegerText(draft.xiaoliurenNumber, '小六壬数字起课');
+    if (!draft.liuyaoYaos.every((value) => [6, 7, 8, 9].includes(value))) {
+      throw new Error('手动起卦的爻值只能是 6、7、8、9');
     }
   }
+
+  if (draft.method === 'liuyao' && (draft.liuyaoMethod ?? 'time') === 'coins') {
+    if (draft.liuyaoCoinThrows?.length !== 6) {
+      throw new Error('手摇起卦需要从初爻到上爻完成六次手摇');
+    }
+  }
+
+  if (draft.method === 'tarot' && draft.tarotMethod === 'interactive') {
+    const expectedCount = tarotSpreads[draft.tarotSpread].cardCount;
+    if (draft.tarotInteractiveSamples?.length !== expectedCount * 2) {
+      throw new Error(`当前牌阵需要逐张抽取${expectedCount}张牌`);
+    }
+  }
+
+  if (draft.method === 'tarot' && (draft.tarotMethod ?? 'random') === 'manual') {
+    const expectedCount = tarotSpreads[draft.tarotSpread].cardCount;
+    if (draft.tarotManualCards?.length !== expectedCount) {
+      throw new Error(`当前牌阵需要按牌位录入${expectedCount}张牌`);
+    }
+  }
+
+  if (draft.method === 'lenormand' && (draft.lenormandMethod ?? 'random') === 'manual') {
+    const expectedCount = LENORMAND_SPREADS[draft.lenormandSpread].positions.length;
+    if (draft.lenormandManualCardIds?.length !== expectedCount) {
+      throw new Error(`当前牌阵需要按牌位录入${expectedCount}张牌`);
+    }
+  }
+
+  if (draft.method === 'lenormand' && draft.lenormandMethod === 'interactive') {
+    const expectedCount = LENORMAND_SPREADS[draft.lenormandSpread].positions.length;
+    if (draft.lenormandInteractiveSamples?.length !== expectedCount) {
+      throw new Error(`当前牌阵需要逐张抽取${expectedCount}张牌`);
+    }
+  }
+
+  if (draft.method === 'ssgw' && (draft.ssgwMethod ?? 'random') === 'manual') {
+    const number = Number(draft.ssgwNumber);
+    if (!/^\d+$/.test(draft.ssgwNumber?.trim() ?? '') || number < 1 || number > 92) {
+      throw new Error('签号需为1至92的整数');
+    }
+  }
+
   if (draft.method === 'jinkoujue' && draft.jinkoujueMethod === 'number') {
     readPositiveIntegerText(draft.jinkoujueNumber, '金口诀数字起课');
   }
 
   if (draft.method === 'taiyi') {
-    if ((draft.taiyiScope ?? 'year') === 'year') {
-      const year = readIntegerText(draft.taiyiYear, '太乙年计年份');
-      assertNumberRange(year, '太乙年计年份', 1900, 2200);
+    if ((draft.taiyiScope ?? 'year') !== 'year') {
+      throw new Error('太乙月计、日计、时计尚未完成古籍历法链校勘，当前只开放年计。');
     }
+    const year = readIntegerText(draft.taiyiYear, '太乙年计年份');
+    assertNumberRange(year, '太乙年计年份', 1900, 2200);
   }
 
   if (draft.method === 'almanac') {
@@ -527,7 +580,12 @@ export async function generateDivinationSession(
   switch (method) {
     case 'liuyao': {
       const module = await import('mingyu-core/divination/liuyao');
-      data = module.generateLiuyao(customDate);
+      const liuyaoMethod = draft.liuyaoMethod ?? 'time';
+      data = module.generateLiuyao(customDate, {
+        method: liuyaoMethod,
+        ...(liuyaoMethod === 'manual' ? { yaos: draft.liuyaoYaos } : {}),
+        ...(liuyaoMethod === 'coins' ? { coinThrows: draft.liuyaoCoinThrows } : {}),
+      });
       break;
     }
     case 'meihua': {
@@ -539,11 +597,7 @@ export async function generateDivinationSession(
       const module = await import('mingyu-core/divination/xiaoliuren');
       data = module.generateXiaoliuren({
         method: draft.xiaoliurenMethod,
-        school: draft.xiaoliurenSchool,
         customDate,
-        ...(draft.xiaoliurenMethod === 'number' && draft.xiaoliurenNumber.trim()
-          ? { number: readPositiveIntegerText(draft.xiaoliurenNumber, '小六壬数字起课') }
-          : {}),
       });
       break;
     }
@@ -570,23 +624,30 @@ export async function generateDivinationSession(
     }
     case 'taiyi': {
       const module = await import('mingyu-core/taiyi');
-      const scope = draft.taiyiScope ?? 'year';
       data = module.generateTaiyi({
-        scope,
-        ...(scope === 'year'
-          ? { year: readIntegerText(draft.taiyiYear, '太乙年计年份') }
-          : { date: customDate ?? new Date() }),
+        scope: 'year',
+        year: readIntegerText(draft.taiyiYear, '太乙年计年份'),
       }) as TaiyiResult;
       break;
     }
     case 'tarot': {
       const module = await import('mingyu-core/divination/tarot');
-      data = module.drawTarotSpread(draft.tarotSpread);
+      data = module.drawTarotSpread(
+        draft.tarotSpread,
+        draft.tarotMethod === 'interactive'
+          ? { interactiveSamples: draft.tarotInteractiveSamples }
+          : (draft.tarotMethod ?? 'random') === 'manual'
+            ? { manualCards: draft.tarotManualCards }
+            : undefined,
+      );
       break;
     }
     case 'ssgw': {
       const module = await import('mingyu-core/divination/ssgw');
-      data = module.drawRandomSign(customDate);
+      data =
+        (draft.ssgwMethod ?? 'random') === 'manual'
+          ? module.resolveSignByNumber(Number(draft.ssgwNumber), customDate)
+          : module.drawRandomSign(customDate);
       break;
     }
     case 'almanac': {
@@ -601,7 +662,14 @@ export async function generateDivinationSession(
     }
     case 'lenormand': {
       const module = await import('mingyu-core/divination/lenormand');
-      data = module.drawLenormandSpread(draft.lenormandSpread);
+      data = module.drawLenormandSpread(
+        draft.lenormandSpread,
+        draft.lenormandMethod === 'interactive'
+          ? { interactiveSamples: draft.lenormandInteractiveSamples }
+          : (draft.lenormandMethod ?? 'random') === 'manual'
+            ? { manualCardIds: draft.lenormandManualCardIds }
+            : undefined,
+      );
       break;
     }
     case 'astrolabe': {

@@ -10,10 +10,10 @@ import {
 import { buildMetaphysicsPrompt } from '../metaphysics-prompt.js';
 
 const qiZhengSchema = z.object({
-  year: z.number().int().min(1900).max(2200).optional().describe('公元年（默认今年）'),
-  month: z.number().int().min(1).max(12).optional().describe('月'),
-  day: z.number().int().min(1).max(31).optional().describe('日'),
-  hour: z.number().int().min(0).max(23).optional().describe('时'),
+  year: z.number().int().min(1900).max(2200).describe('公元年'),
+  month: z.number().int().min(1).max(12).describe('月'),
+  day: z.number().int().min(1).max(31).describe('日'),
+  hour: z.number().int().min(0).max(23).describe('时'),
   minute: z.number().int().min(0).max(59).optional().describe('分'),
   latitude: z.number().min(-90).max(90).optional().describe('纬度（默认北京）'),
   longitude: z.number().min(-180).max(180).optional().describe('经度（默认北京）'),
@@ -31,23 +31,25 @@ export function registerQizhengTool(server: McpServer) {
     'metaphysics_qizheng',
     {
       description:
-        '七政四余（果老星宗）：计算日月五星、罗睺、计都、月孛及《七政算内篇》古法紫炁，立命身宫、排十二宫、二十八宿宿度与庙旺神煞',
+        '七政四余（果老星宗）：计算十一星、真实距星二十八宿界、命身十二宫、庙旺、吊照及分层天文证据',
       inputSchema: qiZhengSchema.shape,
       outputSchema: resultOutputSchema,
     },
     async (args) => {
       try {
         const result = qizheng.generateQizheng({
-          year: args.year ?? new Date().getFullYear(),
-          month: args.month ?? 1,
-          day: args.day ?? 1,
-          hour: args.hour ?? 12,
+          year: args.year,
+          month: args.month,
+          day: args.day,
+          hour: args.hour,
           minute: args.minute ?? 0,
           ...(args.latitude !== undefined ? { latitude: args.latitude } : {}),
           ...(args.longitude !== undefined ? { longitude: args.longitude } : {}),
           ...(args.timezone !== undefined ? { timezone: args.timezone } : {}),
           ...(args.timeZoneId ? { timeZoneId: args.timeZoneId } : {}),
-          ...(args.useTrueSolarTime !== undefined ? { useTrueSolarTime: args.useTrueSolarTime } : {}),
+          ...(args.useTrueSolarTime !== undefined
+            ? { useTrueSolarTime: args.useTrueSolarTime }
+            : {}),
         });
         return createStructuredToolResult({ result });
       } catch (error) {
@@ -59,23 +61,25 @@ export function registerQizhengTool(server: McpServer) {
   server.registerTool(
     'qizheng_prompt',
     {
-      description: '七政四余排盘并生成结构化 AI 解读提示词',
+      description: '七政四余排盘并生成可直接复制给 AI 的结构化提示词',
       inputSchema: qiZhengSchema.shape,
       outputSchema: promptOutputSchema,
     },
     async (args) => {
       try {
         const result = qizheng.generateQizheng({
-          year: args.year ?? new Date().getFullYear(),
-          month: args.month ?? 1,
-          day: args.day ?? 1,
-          hour: args.hour ?? 12,
+          year: args.year,
+          month: args.month,
+          day: args.day,
+          hour: args.hour,
           minute: args.minute ?? 0,
           ...(args.latitude !== undefined ? { latitude: args.latitude } : {}),
           ...(args.longitude !== undefined ? { longitude: args.longitude } : {}),
           ...(args.timezone !== undefined ? { timezone: args.timezone } : {}),
           ...(args.timeZoneId ? { timeZoneId: args.timeZoneId } : {}),
-          ...(args.useTrueSolarTime !== undefined ? { useTrueSolarTime: args.useTrueSolarTime } : {}),
+          ...(args.useTrueSolarTime !== undefined
+            ? { useTrueSolarTime: args.useTrueSolarTime }
+            : {}),
         });
         return createStructuredToolResult({
           result,

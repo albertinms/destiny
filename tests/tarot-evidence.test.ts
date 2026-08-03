@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { analyzeTarotEvidence, drawTarotSpread, tarotSpreads } from 'mingyu-core/divination/tarot';
+import {
+  analyzeTarotEvidence,
+  drawTarotSpread,
+  resolveInteractiveTarotCards,
+  tarotSpreads,
+} from 'mingyu-core/divination/tarot';
 import type { TarotData, TarotSpreadType } from 'mingyu-core/types';
 import { assertPromptIsPortableTaskText } from './prompt-assertions';
 
@@ -38,6 +43,8 @@ test('塔罗全部牌阵应输出覆盖、来源、牌序、主题与限制对�
     assert.ok(evidence.drawOrderFacts.every((fact) => fact.status === '一致'));
     assert.equal(evidence.sequenceFacts.length, Math.max(0, data.cards.length - 1));
     assert.equal(evidence.sequence.length, evidence.sequenceFacts.length);
+    assert.equal(evidence.elementInteractionFacts.length, Math.max(0, data.cards.length - 1));
+    assert.equal(evidence.elementInteractions.length, evidence.elementInteractionFacts.length);
     assert.equal(evidence.recurringThemes.length, evidence.recurringThemeFacts.length);
     assert.equal(evidence.limitations.length, evidence.limitationFacts.length);
     assert.equal(evidence.limitationFacts.length, 6);
@@ -45,6 +52,10 @@ test('塔罗全部牌阵应输出覆盖、来源、牌序、主题与限制对�
     assert.equal(evidence.summaryFact.cardFactCount, evidence.cards.length);
     assert.equal(evidence.summaryFact.drawOrderFactCount, evidence.drawOrderFacts.length);
     assert.equal(evidence.summaryFact.sequenceFactCount, evidence.sequenceFacts.length);
+    assert.equal(
+      evidence.summaryFact.elementInteractionFactCount,
+      evidence.elementInteractionFacts.length,
+    );
     assert.equal(evidence.summaryFact.themeFactCount, evidence.themeFacts.length);
     assert.equal(evidence.summaryFact.recurringThemeFactCount, evidence.recurringThemeFacts.length);
     assert.equal(evidence.summaryFact.counterEvidenceCount, evidence.counterEvidenceFacts.length);
@@ -80,6 +91,15 @@ test('塔罗全部牌阵应输出覆盖、来源、牌序、主题与限制对�
       ),
     );
     assert.ok(
+      evidence.elementInteractionFacts.every(
+        (fact) =>
+          cardKeys.has(fact.fromCardKey) &&
+          cardKeys.has(fact.toCardKey) &&
+          fact.sources.length >= 3 &&
+          fact.limitation.includes('不得据此生成吉凶分数'),
+      ),
+    );
+    assert.ok(
       evidence.themeFacts.every(
         (fact) => fact.cardFactKeys.every((cardKey) => cardKeys.has(cardKey)) && fact.count > 0,
       ),
@@ -102,6 +122,8 @@ test('塔罗单牌不应伪造跨牌关系，多牌应逐对连接相邻牌位',
   assert.ok(celtic);
   assert.deepEqual(single.sequenceFacts, []);
   assert.deepEqual(single.sequence, []);
+  assert.deepEqual(single.elementInteractionFacts, []);
+  assert.deepEqual(single.elementInteractions, []);
   assert.equal(celtic.sequenceFacts.length, 9);
   assert.deepEqual(
     celtic.sequenceFacts.map((fact) => fact.fromCardKey),
@@ -112,6 +134,144 @@ test('塔罗单牌不应伪造跨牌关系，多牌应逐对连接相邻牌位',
     celtic.cards.slice(1).map((card) => card.key),
   );
   assert.ok(celtic.sequenceFacts.every((fact) => fact.limitation.includes('不得把牌阵顺序')));
+});
+
+test('塔罗相邻牌应计算四元素互参且大阿卡纳不强行归入元素', () => {
+  const supportive = drawTarotSpread('three', {
+    manualCards: [
+      { id: 23, reversed: false },
+      { id: 51, reversed: true },
+      { id: 65, reversed: false },
+    ],
+  }).evidenceAnalysis!;
+  assert.deepEqual(
+    supportive.elementInteractionFacts.map((fact) => [
+      fact.fromElement,
+      fact.toElement,
+      fact.relation,
+    ]),
+    [
+      ['火', '风', '相互助长'],
+      ['风', '土', '相互制约'],
+    ],
+  );
+  assert.match(
+    supportive.elementInteractionFacts[0].orientationConstraint,
+    /逆位不改变元素关系分类/,
+  );
+
+  const conflictAndMajor = drawTarotSpread('three', {
+    manualCards: [
+      { id: 23, reversed: false },
+      { id: 37, reversed: false },
+      { id: 2, reversed: false },
+    ],
+  }).evidenceAnalysis!;
+  assert.equal(conflictAndMajor.elementInteractionFacts[0].relation, '相互制约');
+  assert.equal(conflictAndMajor.elementInteractionFacts[1].relation, '核心课题介入');
+  assert.match(conflictAndMajor.elementInteractionFacts[1].promptText, /大阿卡纳不强行归入四元素/);
+  assert.match(conflictAndMajor.promptText, /元素互参：/);
+
+  const neutralAndSupportive = drawTarotSpread('three', {
+    manualCards: [
+      { id: 23, reversed: false },
+      { id: 65, reversed: false },
+      { id: 37, reversed: false },
+    ],
+  }).evidenceAnalysis!;
+  assert.deepEqual(
+    neutralAndSupportive.elementInteractionFacts.map((fact) => fact.relation),
+    ['中性并置', '相互助长'],
+  );
+
+  const sameElement = drawTarotSpread('three', {
+    manualCards: [
+      { id: 23, reversed: false },
+      { id: 24, reversed: false },
+      { id: 25, reversed: false },
+    ],
+  }).evidenceAnalysis!;
+  assert.ok(sameElement.elementInteractionFacts.every((fact) => fact.relation === '同类强化'));
+  assert.doesNotMatch(
+    JSON.stringify([
+      supportive.elementInteractionFacts,
+      conflictAndMajor.elementInteractionFacts,
+      neutralAndSupportive.elementInteractionFacts,
+      sameElement.elementInteractionFacts,
+    ]),
+    /成功率为\d|吉凶总分[：=]\d|能量分数[：=]\d/,
+  );
+});
+
+test('塔罗手工录入应保留牌位与正逆位，并将随机轨迹标为不适用', () => {
+  const data = drawTarotSpread('three', {
+    manualCards: [
+      { id: 1, reversed: false },
+      { id: 22, reversed: true },
+      { id: 78, reversed: false },
+    ],
+  });
+
+  assert.deepEqual(
+    data.cards.map((card) => [card.id, card.position, card.reversed]),
+    [
+      [1, '过去', false],
+      [22, '现在', true],
+      [78, '未来', false],
+    ],
+  );
+  assert.equal(data.draw?.method, '用户按牌位手工录入');
+  assert.equal(data.meta?.algorithm, 'tarot.spread.manual');
+  assert.equal(data.meta?.random, undefined);
+  assert.equal(data.evidenceAnalysis?.randomFact.status, '不适用');
+  assert.equal(data.evidenceAnalysis?.summaryFact.status, '证据链完整');
+  assert.ok(data.evidenceAnalysis?.evidence.items.some((item) => item.title === '手工录入来源'));
+
+  assert.throws(
+    () =>
+      drawTarotSpread('three', {
+        manualCards: [
+          { id: 1, reversed: false },
+          { id: 1, reversed: true },
+          { id: 2, reversed: false },
+        ],
+      }),
+    /不能重复录入/,
+  );
+  assert.throws(
+    () =>
+      drawTarotSpread('single', {
+        seed: '冲突参数',
+        manualCards: [{ id: 1, reversed: false }],
+      }),
+    /不能同时提供随机选项/,
+  );
+});
+
+test('塔罗手动抽取应按样本逐张无重复翻牌并保留可重放轨迹', () => {
+  const samples = [0, 0.75, 0.5, 0.25, 0.999, 0.75];
+  const preview = resolveInteractiveTarotCards('three', samples);
+  const data = drawTarotSpread('three', { interactiveSamples: samples });
+
+  assert.deepEqual(
+    data.cards.map((card) => ({ id: card.id, name: card.name, reversed: card.reversed })),
+    preview,
+  );
+  assert.equal(new Set(data.cards.map((card) => card.id)).size, 3);
+  assert.equal(data.draw?.method, '用户逐张触发前端随机抽取');
+  assert.equal(data.meta?.algorithm, 'tarot.spread.interactive');
+  assert.deepEqual(data.meta?.random, { mode: 'system', seed: undefined, samples });
+  assert.equal(data.evidenceAnalysis?.randomFact.status, '可重放');
+
+  assert.throws(
+    () => drawTarotSpread('three', { interactiveSamples: samples.slice(0, -2) }),
+    /需要逐张抽取3张牌/,
+  );
+  assert.throws(() => resolveInteractiveTarotCards('three', [0]), /需要两个随机样本/);
+  assert.throws(
+    () => drawTarotSpread('three', { seed: '冲突', interactiveSamples: samples }),
+    /不能同时提供随机选项/,
+  );
 });
 
 test('塔罗逆位应形成指向所属牌面的反证事实与汇总', () => {

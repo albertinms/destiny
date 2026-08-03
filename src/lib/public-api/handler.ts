@@ -74,7 +74,6 @@ import type {
   RandomOptions,
   SupplementaryInfo,
   XiaoliurenDivinationMethod,
-  XiaoliurenSchool,
 } from '../../types/divination';
 import { drawTarotSpread } from 'mingyu-core/divination/tarot';
 import type { DivinationMethodId } from '@core/divination/config';
@@ -257,12 +256,10 @@ const DIVINATION_REQUEST_PROPERTIES = {
   },
   method: { enum: ['time', 'number', 'random', 'timeTrigram'] },
   number: { type: 'integer', minimum: 1 },
-  xiaoliurenMethod: { enum: ['time', 'number', 'random'] },
-  xiaoliurenSchool: {
-    enum: ['standard', 'huashan'],
-    description: '小六壬流派。huashan 仅支持时间起课。',
+  xiaoliurenMethod: {
+    enum: ['time'],
+    description: '小六壬当前仅保留可核验的通行时间起课。',
   },
-  xiaoliurenNumber: { type: 'integer', minimum: 1 },
   jinkoujueMethod: { enum: ['time', 'number', 'random'] },
   jinkoujueNumber: { type: 'integer', minimum: 1 },
   spreadType: {
@@ -759,14 +756,14 @@ export function getPublicApiOpenApiDocument(
         post: {
           summary: '七政四余排盘',
           requestBody: openApiJsonRequestBody('#/components/schemas/MetaphysicsRequest'),
-          responses: { '200': { description: '七政四余、紫炁模型与十二宫星盘' } },
+          responses: { '200': { description: '十一星、真实距星宿界与结构化证据' } },
         },
       },
       '/metaphysics/qizheng/prompt': {
         post: {
           summary: '七政四余排盘并生成提示词',
           requestBody: openApiJsonRequestBody('#/components/schemas/MetaphysicsRequest'),
-          responses: { '200': { description: '七政四余星盘、紫炁模型与提示词' } },
+          responses: { '200': { description: '七政四余盘与结构化提示词' } },
         },
       },
       '/metaphysics/xuankong/calculate': {
@@ -1134,8 +1131,8 @@ export function getPublicApiOpenApiDocument(
             },
             yearGanZhi: { type: 'string', description: '直接给定流年干支，如「甲辰」（生肖运程）' },
             scope: {
-              enum: ['year', 'month', 'day', 'hour', 'minute'],
-              description: '太乙计式：年计、月计、日计、时计或分计',
+              enum: ['year'],
+              description: '太乙计式：当前仅开放完成古籍历法链校勘的年计',
             },
             month: { type: 'integer', minimum: 1, maximum: 12 },
             day: { type: 'integer', minimum: 1, maximum: 31 },
@@ -1921,27 +1918,16 @@ function buildZodiacPrompt(input: JsonRecord) {
 }
 
 function calculateTaiyiApi(input: JsonRecord) {
-  const scope = readEnum(input, 'scope', ['year', 'month', 'day', 'hour', 'minute'], 'year');
-  const year = readInteger(input, 'year', 1900, 2200, new Date().getFullYear());
+  const scope = readEnum(input, 'scope', ['year'], 'year');
+  const year = readInteger(input, 'year', 1900, 2200);
   const ganZhi = readString(input, 'ganZhi', '');
   if (ganZhi && !isValidGanZhi(ganZhi)) {
     throw new ApiError(400, 'BAD_REQUEST', `ganZhi 不是有效的六十甲子：${ganZhi}。`);
   }
   try {
-    let date: Date | undefined;
-    if (scope !== 'year') {
-      const month = readInteger(input, 'month', 1, 12);
-      const day = readInteger(input, 'day', 1, 31);
-      const hour = readInteger(input, 'hour', 0, 23, 12);
-      const minute = readInteger(input, 'minute', 0, 59, 0);
-      date = new Date(year, month - 1, day, hour, minute, 0);
-      if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
-        throw new Error('太乙日期无效。');
-      }
-    }
     return taiyi.generateTaiyi({
       scope,
-      ...(scope === 'year' ? { year } : { date }),
+      year,
       ...(ganZhi ? { ganZhi } : {}),
     });
   } catch (error) {
@@ -1963,10 +1949,10 @@ function buildTaiyiPrompt(input: JsonRecord) {
 }
 
 function calculateQizhengApi(input: JsonRecord) {
-  const year = readInteger(input, 'year', 1900, 2200, new Date().getFullYear());
-  const month = optInt(input, 'month', 1, 12) ?? 1;
-  const day = optInt(input, 'day', 1, 31) ?? 1;
-  const hour = optInt(input, 'hour', 0, 23) ?? 12;
+  const year = readInteger(input, 'year', 1900, 2200);
+  const month = readInteger(input, 'month', 1, 12);
+  const day = readInteger(input, 'day', 1, 31);
+  const hour = readInteger(input, 'hour', 0, 23);
   const minute = optInt(input, 'minute', 0, 59) ?? 0;
   buildSolarDate(year, month, day, hour, minute);
   const latitude = optNumber(input, 'latitude', -90, 90);
@@ -1975,22 +1961,30 @@ function calculateQizhengApi(input: JsonRecord) {
   const timeZoneId =
     input.timeZoneId === undefined ? undefined : readString(input, 'timeZoneId', '');
   const useTrueSolarTime = readBoolean(input, 'useTrueSolarTime', false);
-  return qizheng.generateQizheng({
-    year,
-    month,
-    day,
-    hour,
-    minute,
-    ...(latitude !== undefined ? { latitude } : {}),
-    ...(longitude !== undefined ? { longitude } : {}),
-    ...(timezone !== undefined ? { timezone } : {}),
-    ...(timeZoneId ? { timeZoneId } : {}),
-    ...(useTrueSolarTime ? { useTrueSolarTime: true } : {}),
-  });
+  try {
+    return qizheng.generateQizheng({
+      year,
+      month,
+      day,
+      hour,
+      minute,
+      ...(latitude !== undefined ? { latitude } : {}),
+      ...(longitude !== undefined ? { longitude } : {}),
+      ...(timezone !== undefined ? { timezone } : {}),
+      ...(timeZoneId ? { timeZoneId } : {}),
+      ...(useTrueSolarTime ? { useTrueSolarTime: true } : {}),
+    });
+  } catch (error) {
+    throw new ApiError(
+      400,
+      'BAD_REQUEST',
+      error instanceof Error ? error.message : '七政四余参数无效。',
+    );
+  }
 }
 
 function calculateXuanKongApi(input: JsonRecord) {
-  const year = input.year === undefined ? undefined : readInteger(input, 'year', 1, 9999);
+  const year = readInteger(input, 'year', 1, 9999);
   const sitMountain =
     input.sitMountain === undefined ? undefined : readString(input, 'sitMountain', '');
   const facingMountain =
@@ -2007,15 +2001,23 @@ function calculateXuanKongApi(input: JsonRecord) {
     input.guaType === undefined
       ? undefined
       : (readEnum(input, 'guaType', ['下卦', '替卦']) as '下卦' | '替卦');
-  return xuankong.generateXuanKong({
-    ...(year !== undefined ? { year } : {}),
-    ...(sitMountain ? { sitMountain } : {}),
-    ...(facingMountain ? { facingMountain } : {}),
-    ...(facingDegree !== undefined ? { facingDegree } : {}),
-    ...(sitDegree !== undefined ? { sitDegree } : {}),
-    ...(measurementUncertaintyDegrees !== undefined ? { measurementUncertaintyDegrees } : {}),
-    ...(guaType ? { guaType } : {}),
-  });
+  try {
+    return xuankong.generateXuanKong({
+      year,
+      ...(sitMountain ? { sitMountain } : {}),
+      ...(facingMountain ? { facingMountain } : {}),
+      ...(facingDegree !== undefined ? { facingDegree } : {}),
+      ...(sitDegree !== undefined ? { sitDegree } : {}),
+      ...(measurementUncertaintyDegrees !== undefined ? { measurementUncertaintyDegrees } : {}),
+      ...(guaType ? { guaType } : {}),
+    });
+  } catch (error) {
+    throw new ApiError(
+      400,
+      'BAD_REQUEST',
+      error instanceof Error ? error.message : '玄空飞星参数无效。',
+    );
+  }
 }
 
 function calculateResidentialApi(input: JsonRecord) {
@@ -2409,7 +2411,12 @@ async function calculateZiweiCompatibilityApi(input: JsonRecord) {
   const compatibility = analyzeZiweiCompatibility(
     charts.person1.payloadByScope.origin,
     charts.person2.payloadByScope.origin,
-    { person1Name: charts.person1Name, person2Name: charts.person2Name },
+    {
+      person1Name: charts.person1Name,
+      person2Name: charts.person2Name,
+      astrolabe1: charts.person1.astrolabe,
+      astrolabe2: charts.person2.astrolabe,
+    },
   );
   return {
     charts: {
@@ -2426,12 +2433,19 @@ async function buildZiweiCompatibilityPromptApi(input: JsonRecord) {
   const compatibility = analyzeZiweiCompatibility(
     charts.person1.payloadByScope.origin,
     charts.person2.payloadByScope.origin,
-    { person1Name: charts.person1Name, person2Name: charts.person2Name },
+    {
+      person1Name: charts.person1Name,
+      person2Name: charts.person2Name,
+      astrolabe1: charts.person1.astrolabe,
+      astrolabe2: charts.person2.astrolabe,
+    },
   );
   const topic = readEnum(input, 'promptTopic', ZIWEI_PROMPT_TOPICS, 'relationship');
   const prompt = buildCombinedZiweiCompatibilityPrompt({
     primaryPayload: charts.person1.payloadByScope.origin,
     partnerPayload: charts.person2.payloadByScope.origin,
+    primaryAstrolabe: charts.person1.astrolabe,
+    partnerAstrolabe: charts.person2.astrolabe,
     primaryTrueSolarEvidence: charts.person1.trueSolarEvidence,
     partnerTrueSolarEvidence: charts.person2.trueSolarEvidence,
     primaryName: charts.person1Name,
@@ -2580,30 +2594,23 @@ function calculateLiuren(input: JsonRecord) {
 }
 
 function calculateXiaoliuren(input: JsonRecord) {
+  assertNoRandomOptions(input, '小六壬是确定性时间起课，不接受 seed 或 replay。');
   const method = readEnum(
     input,
     'xiaoliurenMethod',
-    ['time', 'number', 'random'],
+    ['time'],
     'time',
   ) as XiaoliurenDivinationMethod;
-  const school = readEnum(
-    input,
-    'xiaoliurenSchool',
-    ['standard', 'huashan'],
-    'standard',
-  ) as XiaoliurenSchool;
-  if (school === 'huashan' && method !== 'time') {
-    throw new ApiError(400, 'BAD_REQUEST', '华山派小六壬只以时间起课。');
-  }
-  if (method !== 'random') {
-    assertNoRandomOptions(input, '小六壬仅随机起课接受 seed 或 replay。');
+  if (input.xiaoliurenSchool !== undefined || input.xiaoliurenNumber !== undefined) {
+    throw new ApiError(
+      400,
+      'BAD_REQUEST',
+      '小六壬已移除无可靠来源的流派和数字起课参数，当前仅接受时间起课。',
+    );
   }
   return generateXiaoliuren({
     method,
-    school,
-    ...(method === 'number' ? { number: readInteger(input, 'xiaoliurenNumber', 1) } : {}),
     customDate: readCustomDate(input),
-    ...(method === 'random' ? readRandomOptions(input) : {}),
   });
 }
 
@@ -3055,6 +3062,7 @@ function buildCompactBaziResult(result: BaziChartResult) {
 function buildCompactZiweiResult(result: ReturnType<typeof buildSerializableZiweiResult>) {
   return {
     basicInfo: result.basicInfo,
+    calculationConfig: result.calculationConfig,
     scopeNames: result.scopeNames,
     evidenceByScope: Object.fromEntries(
       Object.entries(result.payloadByScope).map(([scope, payload]) => [

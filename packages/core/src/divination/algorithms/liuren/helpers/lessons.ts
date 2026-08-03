@@ -31,6 +31,7 @@ const STEM_RESIDENCE_MAP = DAY_STEM_RESIDENCE_MAP;
 const MENG_BRANCHES = new Set(['寅', '巳', '申', '亥']);
 const ZHONG_BRANCHES = new Set(['子', '卯', '午', '酉']);
 const JI_BRANCHES = new Set(['辰', '戌', '丑', '未']);
+const VALID_WUXING = new Set(['木', '火', '土', '金', '水']);
 const STEMS_BY_RESIDENCE: Record<string, string[]> = Object.entries(STEM_RESIDENCE_MAP).reduce<
   Record<string, string[]>
 >((acc, [stem, branch]) => {
@@ -149,20 +150,11 @@ function assertValidResolveTransmissionInput(
 }
 
 export function buildLessonNote(relation: string, xunKong: string[], upper: string, lower: string) {
-  const xunKongTip =
-    xunKong.includes(upper) || xunKong.includes(lower) ? '本课触及旬空，落地会有延后。' : '';
-
-  if (relation === '比和') {
-    return ['内外同气，推进阻力相对可控。', xunKongTip].filter(Boolean).join('');
-  }
-  if (relation.includes('生')) {
-    return ['有承接与助推，但也要看后续是否跟得上。', xunKongTip].filter(Boolean).join('');
-  }
-  if (relation.includes('克')) {
-    return ['现实牵制较强，先处理冲突点更稳。', xunKongTip].filter(Boolean).join('');
-  }
-
-  return ['需结合全课继续判断。', xunKongTip].filter(Boolean).join('');
+  const voidFacts = [
+    xunKong.includes(upper) ? `上神${upper}落日柱旬空` : '',
+    xunKong.includes(lower) ? `下位${lower}落日柱旬空` : '',
+  ].filter(Boolean);
+  return [`上神${upper}与下位${lower}的五行关系为${relation}`, ...voidFacts].join('；') + '。';
 }
 
 export function buildFourLessons(args: {
@@ -205,7 +197,14 @@ function isSameYinYangAsDayStem(branch: string, dayStem: string) {
 
 function getStemWuxing(stem: string) {
   const stemIndex = HEAVENLY_STEMS.indexOf(stem as (typeof HEAVENLY_STEMS)[number]);
-  return stemIndex >= 0 ? BASIC_MAPPINGS.STEM_WUXING[stemIndex] : '';
+  if (stemIndex < 0) {
+    throw new Error(`无法识别天干 "${stem}" 的五行属性。`);
+  }
+  const element = BASIC_MAPPINGS.STEM_WUXING[stemIndex];
+  if (!VALID_WUXING.has(element)) {
+    throw new Error(`天干 ${stem} 的五行数据缺失。`);
+  }
+  return element;
 }
 
 function uniqueCandidatesByUpper(candidates: KeCandidate[]) {
@@ -219,19 +218,6 @@ function uniqueCandidatesByUpper(candidates: KeCandidate[]) {
   });
 }
 
-function hasSameDayAndHourElement(context: ResolveTransmissionContext) {
-  const dayStemElement = getGanZhiWuxing(context.dayStem);
-  const dayBranchElement = getGanZhiWuxing(context.dayBranch);
-  const hourStemElement = getGanZhiWuxing(context.hourStem || '');
-  const hourBranchElement = getGanZhiWuxing(context.hourBranch || '');
-
-  return (
-    Boolean(dayStemElement && hourStemElement) &&
-    dayStemElement === dayBranchElement &&
-    hourStemElement === hourBranchElement
-  );
-}
-
 function getBranchAt(rawIndex: number) {
   const branches = Object.keys(BRANCH_WUXING);
   return branches[((rawIndex % branches.length) + branches.length) % branches.length];
@@ -240,7 +226,7 @@ function getBranchAt(rawIndex: number) {
 function shiftBranch(branch: string, steps: number) {
   const index = getBranchIndex(branch);
   if (index < 0) {
-    return branch;
+    throw new Error(`无法移动非法地支 "${branch}"。`);
   }
   return getBranchAt(index + steps);
 }
@@ -249,13 +235,14 @@ function walkBranches(start: string, end: string) {
   const startIndex = getBranchIndex(start);
   const endIndex = getBranchIndex(end);
   if (startIndex < 0 || endIndex < 0) {
-    return [];
+    throw new Error(`涉害深度计算收到非法地支：${start} -> ${end}。`);
   }
 
   const branches: string[] = [];
-  for (let step = 0; step < 12; step += 1) {
+  // 涉害从所临地盘之后起数，归上神本家即止；起点与本家均不重复计入。
+  for (let step = 1; step <= 12; step += 1) {
     const branch = getBranchAt(startIndex + step);
-    if (branch === end && step > 0) {
+    if (branch === end) {
       break;
     }
     branches.push(branch);
@@ -270,7 +257,10 @@ function getHarmDepth(candidate: KeCandidate, context: ResolveTransmissionContex
   const walkedBranches = walkBranches(startUnder, candidate.lesson.upper);
 
   return walkedBranches.reduce((count, branch) => {
-    const branchElement = BRANCH_WUXING[branch] || '';
+    const branchElement = BRANCH_WUXING[branch];
+    if (!VALID_WUXING.has(branchElement)) {
+      throw new Error(`地支 ${branch} 的五行数据缺失。`);
+    }
     const housedStemElements = (STEMS_BY_RESIDENCE[branch] || [])
       .map(getStemWuxing)
       .filter(Boolean);
@@ -294,41 +284,33 @@ function pickByHarmDepth(candidates: KeCandidate[], context: ResolveTransmission
     depth: getHarmDepth(candidate, context),
     under: getUnderByUpper(context.heavenlyPlate, candidate.lesson.upper),
   }));
-  const meng = ranked
-    .filter((item) => MENG_BRANCHES.has(item.under))
-    .sort((a, b) => b.depth - a.depth || a.index - b.index)[0];
-  if (meng) {
-    return meng.candidate;
+  const maxDepth = Math.max(...ranked.map((item) => item.depth));
+  let tied = ranked.filter((item) => item.depth === maxDepth);
+
+  for (const branchGroup of [MENG_BRANCHES, ZHONG_BRANCHES, JI_BRANCHES]) {
+    const sameDepthGroup = tied.filter((item) => branchGroup.has(item.under));
+    if (sameDepthGroup.length === 1) {
+      return sameDepthGroup[0].candidate;
+    }
+    if (sameDepthGroup.length > 1) {
+      tied = sameDepthGroup;
+      break;
+    }
   }
 
-  const zhong = ranked
-    .filter((item) => ZHONG_BRANCHES.has(item.under))
-    .sort((a, b) => b.depth - a.depth || a.index - b.index)[0];
-  if (zhong) {
-    return zhong.candidate;
-  }
-
-  const ji = ranked
-    .filter((item) => JI_BRANCHES.has(item.under))
-    .sort((a, b) => b.depth - a.depth || a.index - b.index)[0];
-  if (ji) {
-    return ji.candidate;
-  }
-
-  const tied = ranked.sort((a, b) => b.depth - a.depth || a.index - b.index);
   const preferredUpper = YANG_STEMS.has(context.dayStem)
-    ? context.dayStemResidence
-    : context.dayBranch;
-  return (
-    tied.find((item) => item.candidate.lesson.upper === preferredUpper)?.candidate ||
-    tied[0].candidate
-  );
+    ? getUpperByUnder(context.heavenlyPlate, context.dayStemResidence)
+    : getUpperByUnder(context.heavenlyPlate, context.dayBranch);
+  const picked = tied.find((item) => item.candidate.lesson.upper === preferredUpper)?.candidate;
+  if (!picked) {
+    throw new Error('涉害复等无法按刚日干上或柔日支上确定发用。');
+  }
+  return picked;
 }
 
 function resolveMultipleCandidates(
   candidates: KeCandidate[],
   context: ResolveTransmissionContext,
-  lessons: LiurenLesson[],
   tagPrefix = '',
 ): InitialTransmissionResult {
   const uniqueCandidates = uniqueCandidatesByUpper(candidates);
@@ -337,15 +319,6 @@ function resolveMultipleCandidates(
   );
 
   if (biYongCandidates.length === 1) {
-    const zhiYiVariant = pickZhiYiVariant(uniqueCandidates, biYongCandidates[0], context, lessons);
-    if (zhiYiVariant) {
-      return {
-        initial: zhiYiVariant.upper,
-        rule: tagPrefix ? `${tagPrefix}比用法` : '比用法',
-        tag: tagPrefix ? `${tagPrefix}知一` : '知一',
-      };
-    }
-
     const picked = biYongCandidates[0];
     return {
       initial: picked.lesson.upper,
@@ -366,29 +339,10 @@ function resolveMultipleCandidates(
   };
 }
 
-function pickZhiYiVariant(
-  uniqueCandidates: KeCandidate[],
-  sameYinYangCandidate: KeCandidate,
-  context: ResolveTransmissionContext,
-  lessons: LiurenLesson[],
-) {
-  if (
-    uniqueCandidates.length !== 2 ||
-    uniqueCandidates.some((candidate) => candidate.type !== '下贼上') ||
-    sameYinYangCandidate.index !== 0 ||
-    !hasSameDayAndHourElement(context)
-  ) {
-    return null;
-  }
-
-  return lessons[1] || null;
-}
-
 function resolveKeCandidates(
   lowerKeUpper: KeCandidate[],
   upperKeLower: KeCandidate[],
   context: ResolveTransmissionContext,
-  lessons: LiurenLesson[],
   rulePrefix = '',
 ): InitialTransmissionResult | null {
   const uniqueLowerKeUpper = uniqueCandidatesByUpper(lowerKeUpper);
@@ -404,7 +358,7 @@ function resolveKeCandidates(
   }
 
   if (uniqueLowerKeUpper.length > 1) {
-    return resolveMultipleCandidates(uniqueLowerKeUpper, context, lessons, rulePrefix);
+    return resolveMultipleCandidates(uniqueLowerKeUpper, context, rulePrefix);
   }
 
   if (uniqueUpperKeLower.length === 1) {
@@ -417,7 +371,7 @@ function resolveKeCandidates(
   }
 
   if (uniqueUpperKeLower.length > 1) {
-    return resolveMultipleCandidates(uniqueUpperKeLower, context, lessons, rulePrefix);
+    return resolveMultipleCandidates(uniqueUpperKeLower, context, rulePrefix);
   }
 
   return null;
@@ -444,13 +398,13 @@ function resolveRemoteKe(
     return { initial: upperKeDay[0].lesson.upper, rule: '遥克法', tag: '蒿矢' };
   }
   if (upperKeDay.length > 1) {
-    return resolveMultipleCandidates(upperKeDay, context, lessons, '遥克');
+    return resolveMultipleCandidates(upperKeDay, context, '遥克');
   }
   if (dayKeUpper.length === 1) {
     return { initial: dayKeUpper[0].lesson.upper, rule: '遥克法', tag: '弹射' };
   }
   if (dayKeUpper.length > 1) {
-    return resolveMultipleCandidates(dayKeUpper, context, lessons, '遥克');
+    return resolveMultipleCandidates(dayKeUpper, context, '遥克');
   }
 
   return null;
@@ -469,18 +423,21 @@ function getUniqueLessonPairCount(lessons: LiurenLesson[]) {
 }
 
 function getPunishment(branch: string) {
-  return SANXING_MAP[branch] || branch;
+  const punishment = SANXING_MAP[branch];
+  if (!punishment) {
+    throw new Error(`地支 ${branch} 的三刑映射缺失。`);
+  }
+  return punishment;
 }
 
 function resolveFuyinTransmission(
   lessons: LiurenLesson[],
   context: ResolveTransmissionContext,
 ): InitialTransmissionResult {
-  const yiKeUpper = lessons[0]?.upper || context.dayStemResidence;
-  const sanKeUpper = lessons[2]?.upper || context.dayBranch;
-  const isSelfResponsibility =
-    YANG_STEMS.has(context.dayStem) || context.dayStem === '乙' || context.dayStem === '癸';
-  const useDayStemSide = isSelfResponsibility;
+  const yiKeUpper = lessons[0].upper;
+  const sanKeUpper = lessons[2].upper;
+  const isYangDay = YANG_STEMS.has(context.dayStem);
+  const useDayStemSide = isYangDay || context.dayStem === '乙' || context.dayStem === '癸';
   const initial = useDayStemSide ? yiKeUpper : sanKeUpper;
   let middle = getPunishment(initial);
 
@@ -490,14 +447,18 @@ function resolveFuyinTransmission(
 
   let final = getPunishment(middle);
   if (final === middle || getPunishment(middle) === initial) {
-    final = LIUCHONG_MAP[middle] || middle;
+    const opposite = LIUCHONG_MAP[middle];
+    if (!opposite) {
+      throw new Error(`地支 ${middle} 的六冲映射缺失。`);
+    }
+    final = opposite;
   }
 
   return {
     initial,
     branches: [initial, middle, final],
     rule: '伏吟法',
-    tag: isSelfResponsibility ? '自任' : '自信',
+    tag: isYangDay ? '自任' : '自信',
   };
 }
 
@@ -517,14 +478,17 @@ function resolveFanyinTransmission(
       (lesson) =>
         ({ lesson, type: '上克下', index: lessons.indexOf(lesson) }) satisfies KeCandidate,
     );
-  const keResult = resolveKeCandidates(lowerKeUpper, upperKeLower, context, lessons, '返吟');
+  const keResult = resolveKeCandidates(lowerKeUpper, upperKeLower, context, '返吟');
   if (keResult) {
     return keResult;
   }
 
-  const yiKeUpper = lessons[0]?.upper || context.dayStemResidence;
-  const sanKeUpper = lessons[2]?.upper || context.dayBranch;
-  const initial = getYiMa(context.dayBranch) || getUpperByUnder(context.heavenlyPlate, '寅');
+  const yiKeUpper = lessons[0].upper;
+  const sanKeUpper = lessons[2].upper;
+  const initial = getYiMa(context.dayBranch);
+  if (!initial) {
+    throw new Error(`日支 ${context.dayBranch} 的驿马映射缺失。`);
+  }
 
   return {
     initial,
@@ -538,9 +502,9 @@ function resolveSpecialTransmission(
   lessons: LiurenLesson[],
   context: ResolveTransmissionContext,
 ): InitialTransmissionResult {
-  const yiKeUpper = lessons[0]?.upper || context.dayStemResidence;
-  const sanKeUpper = lessons[2]?.upper || context.dayBranch;
-  const siKeUpper = lessons[3]?.upper || sanKeUpper;
+  const yiKeUpper = lessons[0].upper;
+  const sanKeUpper = lessons[2].upper;
+  const siKeUpper = lessons[3].upper;
   const isYangDay = YANG_STEMS.has(context.dayStem);
   const isBazhuanDay = BAZHUAN_DAYS.has(`${context.dayStem}${context.dayBranch}`);
 
@@ -568,8 +532,14 @@ function resolveSpecialTransmission(
 
   if (getUniqueLessonPairCount(lessons) === 3) {
     if (isYangDay) {
-      const heStem = TIAN_GAN_HE[context.dayStem]?.partner || context.dayStem;
-      const heStemResidence = STEM_RESIDENCE_MAP[heStem] || context.dayStemResidence;
+      const heStem = TIAN_GAN_HE[context.dayStem]?.partner;
+      if (!heStem) {
+        throw new Error(`日干 ${context.dayStem} 的天干五合映射缺失。`);
+      }
+      const heStemResidence = STEM_RESIDENCE_MAP[heStem];
+      if (!heStemResidence) {
+        throw new Error(`合干 ${heStem} 的寄宫映射缺失。`);
+      }
       const initial = getUpperByUnder(context.heavenlyPlate, heStemResidence);
       return {
         initial,
@@ -621,7 +591,7 @@ export function resolveInitialTransmission(
       (lesson) =>
         ({ lesson, type: '上克下', index: lessons.indexOf(lesson) }) satisfies KeCandidate,
     );
-  const keResult = resolveKeCandidates(lowerKeUpper, upperKeLower, context, lessons);
+  const keResult = resolveKeCandidates(lowerKeUpper, upperKeLower, context);
   if (keResult) {
     return keResult;
   }
