@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { HttpRequest, type InvocationContext } from '@azure/functions';
+import * as azureFunctions from '@azure/functions';
+import type { InvocationContext } from '@azure/functions';
 import { mcpMingshuHandler, mcpFullHandler } from '../../api/src/functions/mcp.js';
+
+/**
+ * `@azure/functions` 是 CJS：具名汇出是否被 Node 的 cjs-module-lexer 侦测到，
+ * 会因 Node 版本而异（本机 24 可以，CI 的 22 不行）。走 default 取值最稳。
+ */
+const { HttpRequest } =
+  (azureFunctions as unknown as { default?: typeof azureFunctions }).default ?? azureFunctions;
 
 const PROTOCOL_VERSION = '2025-06-18';
 
