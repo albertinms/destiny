@@ -70,8 +70,77 @@ export const PUBLIC_API_ENDPOINTS = [
   'POST /api/v1/ai/models',
 ] as const;
 
+/** 仅接受常规主机名与可选端口，避免把代理头里的异常值拼进对外公布的地址。 */
+const HOST_PATTERN = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?$/i;
+
+/** 代理头可能是 `a, b, c` 形式的链路，取最靠近客户端的第一段。 */
+function readFirstForwardedValue(request: Request, header: string): string | null {
+  const raw = request.headers.get(header);
+  if (!raw) return null;
+  const first = raw.split(',')[0]?.trim();
+  return first ? first : null;
+}
+
+function readForwardedHost(request: Request): string | null {
+  const candidates = [
+    readFirstForwardedValue(request, 'x-forwarded-host'),
+    readFirstForwardedValue(request, 'host'),
+  ];
+  return candidates.find((host): host is string => !!host && HOST_PATTERN.test(host)) ?? null;
+}
+
+function readForwardedProtocol(request: Request, fallback: string): string {
+  const proto = readFirstForwardedValue(request, 'x-forwarded-proto');
+  if (proto && /^https?$/i.test(proto)) {
+    return `${proto.toLowerCase()}:`;
+  }
+  return fallback;
+}
+
+/**
+ * 环境变量兜底：仅在请求头没有可用主机名时使用。
+ * Cloudflare Workers 没有 process，这里做存在性判断而不是直接读取。
+ */
+function readConfiguredOrigin(): string | null {
+  const env = typeof process !== 'undefined' ? process.env : undefined;
+  const raw = env?.PUBLIC_BASE_URL?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.origin.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 解析对外公布的自身地址。
+ *
+ * Azure Functions 收到的 `request.url` 是 Function App 自身的 `*.azurewebsites.net`，
+ * 自定义域名只出现在 `X-Forwarded-Host`，因此优先采用代理头；Cloudflare 与 Docker
+ * 两条部署路径的 Host 头与 `request.url` 同源，行为不变。
+ */
 export function getPublicApiRuntime(request: Request): PublicApiRuntime {
   const url = new URL(request.url);
+
+  // 显式配置优先：部署环境若无法提供可信的转发头，这是唯一能确定对外域名的来源。
+  const configuredOrigin = readConfiguredOrigin();
+  if (configuredOrigin) {
+    return {
+      service: new URL(configuredOrigin).host,
+      origin: configuredOrigin,
+    };
+  }
+
+  const forwardedHost = readForwardedHost(request);
+  if (forwardedHost) {
+    const protocol = readForwardedProtocol(request, url.protocol);
+    return {
+      service: forwardedHost,
+      origin: `${protocol}//${forwardedHost}`,
+    };
+  }
+
   const origin = url.origin.replace(/\/+$/, '');
 
   return {

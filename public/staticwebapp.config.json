@@ -7,12 +7,22 @@
     {
       "route": "/.well-known/aov-mingyu-api.json",
       "rewrite": "/api/.well-known/aov-mingyu-api.json"
+    },
+    {
+      "route": "/mcp",
+      "rewrite": "/api/mcp"
+    },
+    {
+      "route": "/mcp/mingshu",
+      "rewrite": "/api/mcp/mingshu"
     }
   ],
   "navigationFallback": {
     "rewrite": "/index.html",
     "exclude": [
       "/api/*",
+      "/mcp",
+      "/mcp/*",
       "/assets/*",
       "/skills/*",
       "/.well-known/*",
