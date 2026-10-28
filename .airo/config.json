@@ -1,0 +1,4 @@
+{
+  "buildCommand": "NODE_ENV=production pnpm run build:docker",
+  "serveCommand": "node server-dist/docker-server.mjs"
+}
