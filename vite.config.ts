@@ -251,7 +251,9 @@ export default defineConfig({
   build: {
     target: 'es2020',
     chunkSizeWarningLimit: 1000,
+    minify: false,
     rollupOptions: {
+      maxParallelFileOps: 10,
       output: {
         manualChunks(id) {
           return getManualChunk(id);

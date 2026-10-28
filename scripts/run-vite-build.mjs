@@ -6,11 +6,11 @@ const args = isServer ? ['build', '--config', 'vite.server.config.ts'] : ['build
 
 const viteBin = path.resolve('node_modules', 'vite', 'bin', 'vite.js');
 
-const result = spawnSync(process.execPath, ['--max-old-space-size=512', viteBin, ...args], {
+const result = spawnSync(process.execPath, ['--max-old-space-size=256', viteBin, ...args], {
   stdio: 'inherit',
   env: {
     ...process.env,
-    NODE_OPTIONS: '--max-old-space-size=512',
+    NODE_OPTIONS: '--max-old-space-size=256',
   },
 });
 
